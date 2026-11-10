@@ -176,7 +176,7 @@ CREATE INDEX idx_core_lookup ON core(world_id, scope, owner);
 ### 5.2. Валидация `item_uid`
 
 ```python
-UID_RE = re.compile(r"^[a-z][a-z0-9_]*:[a-z0-9][a-z0-9_.\-/]*$")
+UID_RE = re.compile(r"^[a-z][a-z0-9_]*:[A-Za-z0-9][A-Za-z0-9_.\-/]*$")
 RAW_RE = re.compile(r"^\d+(:\d+)?$")
 ```
 
@@ -185,6 +185,10 @@ RAW_RE = re.compile(r"^\d+(:\d+)?$")
 - сырые `265:0`, NBT, локально собранные `item_key` запрещены.
 
 ## 6. MCP API
+
+Имена MCP-инструментов короткие, потому что клиент добавляет имя сервера:
+в OpenCode это `memory_open`, `memory_brief`, ... (или `tools.memory.brief` в
+Code Mode). Python-функции внутри пакета называются `memory_*`.
 
 ```python
 memory_open(world_id, profile_id, robot_id) -> {ctx_id, world_id, profile_id, robot_id}
