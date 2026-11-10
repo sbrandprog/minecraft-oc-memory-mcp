@@ -77,14 +77,15 @@ async def main() -> None:
                 "robot_id": "smoke-robot",
             },
         )
-        ctx_id = opened["ctx_id"]
-        print(f"context: {ctx_id}")
+        session_id = opened["session_id"]
+        if session_id != opened["ctx_id"]:
+            raise RuntimeError("session_id and ctx_id aliases differ")
+        print(f"session: {session_id}")
 
         await _call(
             session,
             "set_preference",
             {
-                "ctx_id": ctx_id,
                 "record": {
                     "key": "base",
                     "value": "overworld (10,64,10)",
@@ -97,7 +98,6 @@ async def main() -> None:
             session,
             "remember_poi",
             {
-                "ctx_id": ctx_id,
                 "record": {
                     "kind": "chest",
                     "label": "iron chest",
@@ -116,7 +116,6 @@ async def main() -> None:
             session,
             "brief",
             {
-                "ctx_id": ctx_id,
                 "task": "bring iron",
                 "pose": {"dim": 0, "x": 10, "y": 64, "z": 12},
             },
@@ -134,7 +133,7 @@ async def main() -> None:
             session,
             "map",
             {
-                "ctx_id": ctx_id,
+                "session_id": session_id,
                 "dim": 0,
                 "center": {"x": 10, "y": 64, "z": 10},
                 "radius": 16,
@@ -147,7 +146,6 @@ async def main() -> None:
         rejected = await session.call_tool(
             "remember_poi",
             {
-                "ctx_id": ctx_id,
                 "record": {
                     "kind": "ore",
                     "label": "raw id",
@@ -164,13 +162,13 @@ async def main() -> None:
         print("validation: raw item id rejected")
 
         forgotten = await _call(
-            session, "forget", {"ctx_id": ctx_id, "poi_id": poi["id"]}
+            session, "forget", {"session_id": session_id, "poi_id": poi["id"]}
         )
         if forgotten["deleted"] != 1:
             raise RuntimeError("poi was not deleted")
         print("forget: 1 poi deleted")
 
-        stats = await _call(session, "stats", {"ctx_id": ctx_id})
+        stats = await _call(session, "stats", {})
         print(f"stats: total={stats['poi_total']} db={stats['db_bytes']} bytes")
 
     print("OK")

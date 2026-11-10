@@ -57,6 +57,7 @@ class MemoryRepo:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.conn = connect(settings.db_path)
+        self.default_ctx_id: str | None = None
         migrate(self.conn, settings.migrations_dir)
 
     # ------------------------------------------------------------------ context
@@ -92,7 +93,9 @@ class MemoryRepo:
             ),
         )
         self.conn.commit()
+        self.default_ctx_id = ctx_id
         return {
+            "session_id": ctx_id,
             "ctx_id": ctx_id,
             "world_id": world_id,
             "profile_id": profile_id,
@@ -104,12 +107,12 @@ class MemoryRepo:
             "SELECT * FROM context WHERE ctx_id = ?", (ctx_id,)
         ).fetchone()
         if row is None:
-            raise ValueError("unknown ctx_id; call memory_open first")
+            raise ValueError("unknown session_id; call memory_open first")
         if row["revoked"]:
-            raise ValueError("ctx_id has been revoked")
+            raise ValueError("session_id has been revoked")
         now = now_ms()
         if row["expires_at"] <= now:
-            raise ValueError("ctx_id has expired; call memory_open again")
+            raise ValueError("session_id has expired; call memory_open again")
         self.conn.execute(
             "UPDATE context SET last_seen_at = ? WHERE ctx_id = ?", (now, ctx_id)
         )

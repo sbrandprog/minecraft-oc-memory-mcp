@@ -50,8 +50,8 @@ opencode / Pi ──MCP──► memory-mcp ──► SQLite (один файл,
 
 - `world_id` неизменяем и уникален для пары «мир + сборка». При смене пака — новый
   `world_id` или очистка памяти.
-- Границу задаёт `ctx_id`, выданный `memory_open`; аргументы LLM не могут её
-  переопределить.
+- Границу задаёт `session_id` (он же `ctx_id`), выданный `memory_open`;
+  аргументы LLM не могут её переопределить. После `open` его можно не передавать.
 - `owner`: `''` для `world`, `p:<profile>` для `profile`, `r:<robot>` для `robot`.
 
 Правило: **актора разделяем, мир делим**. POI и опасности видны всем в мире; текущая
@@ -191,21 +191,30 @@ RAW_RE = re.compile(r"^\d+(:\d+)?$")
 Code Mode). Python-функции внутри пакета называются `memory_*`.
 
 ```python
-memory_open(world_id, profile_id, robot_id) -> {ctx_id, world_id, profile_id, robot_id}
+memory_open(world_id, profile_id, robot_id) -> {
+    session_id, ctx_id, world_id, profile_id, robot_id, hint
+}
 
-memory_brief(ctx_id, task=None, pose=None, item_uid=None, kind=None,
-             radius=64, budget_tokens=1200) -> Brief
+memory_brief(task=None, pose=None, item_uid=None, kind=None,
+             radius=64, budget_tokens=1200,
+             session_id=None) -> Brief
 
-memory_map(ctx_id, dim, center, radius, format="ascii") -> MapResult
+memory_map(dim, center, radius=64, format="ascii",
+           session_id=None) -> MapResult
 
-memory_remember_poi(ctx_id, record: PoiRecord) -> {id, merged}
-memory_set_preference(ctx_id, record: PreferenceRecord) -> {key}
+memory_remember_poi(record: PoiRecord, session_id=None) -> {id, merged}
+memory_set_preference(record: PreferenceRecord, session_id=None) -> {key}
 
-memory_update(ctx_id, poi_id, patch: PoiPatch) -> Poi
-memory_forget(ctx_id, poi_id=None, query=None) -> {deleted}
+memory_update(poi_id, patch: PoiPatch, session_id=None) -> Poi
+memory_forget(poi_id=None, query=None, session_id=None) -> {deleted}
 
-memory_stats(ctx_id) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
+memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
 ```
+
+`session_id` — публичное имя токена (в ответе `memory_open` он же `ctx_id`).
+Все инструменты, кроме `open`, принимают его опционально: если не передан,
+используется последняя открытая сессия в процессе. Явно передавать нужно при
+переключении между роботами/профилями/мирами. Поля `sessionId` нет.
 
 `Brief`:
 
@@ -227,7 +236,7 @@ memory_stats(ctx_id) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
 
 ### Запись
 
-1. Проверить `ctx_id`, получить `world/profile/robot`.
+1. Проверить `session_id`, получить `world/profile/robot`.
 2. Валидировать `item_uid`, координаты, `y ∈ [0, 255]`.
 3. Найти кандидатов через `poi_rtree` в пределах `radius + tolerance` с тем же
    `kind`, `item_uid`, `scope`, `owner`.
@@ -237,7 +246,7 @@ memory_stats(ctx_id) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
 
 ### Чтение
 
-1. `ctx_id` → контекст, проверить TTL и `revoked`.
+1. `session_id` → контекст, проверить TTL и `revoked`.
 2. Всегда добавить видимые `core` (по `importance`).
 3. Если задан `pose` — bbox по `poi_rtree`, затем точная дистанция
    `sqrt(dx² + dz²) + 2|dy|`.
@@ -248,7 +257,7 @@ memory_stats(ctx_id) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
 
 ## 8. Протокол агента
 
-1. Старт сессии: `memory_open` → `ctx_id`.
+1. Старт сессии: `memory_open` → `session_id` (он же `ctx_id`).
 2. Старт задачи: `memory_brief(task, pose)`.
 3. Пользовательский термин → `nei.resolve`; неоднозначно → уточнить у пользователя.
 4. Наблюдение → `memory_remember_poi` с UID от NEI.
@@ -261,7 +270,7 @@ memory_stats(ctx_id) -> {poi_total, by_kind, by_scope, db_bytes, world_id}
 1. В памяти нет сырых runtime ID предметов — только `item_uid` от NEI.
 2. `world_id` неизменяем; смена пака — новый мир или очистка.
 3. Память не вызывает другие сервисы и Minecraft.
-4. Видимость и мир берутся из `ctx_id`, а не из аргументов модели.
+4. Видимость и мир берутся из `session_id`, а не из аргументов модели.
 5. `memory_remember_poi` идемпотентен.
 6. Удаление — только явный `memory_forget`; TTL чистится лениво.
 7. Никаких рецептов, маршрутов, эпизодов и алиасов в MVP.

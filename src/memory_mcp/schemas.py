@@ -26,6 +26,17 @@ class Vec3(BaseModel):
     z: int
 
 
+class OpenResult(BaseModel):
+    session_id: str = Field(
+        description="Session token. Pass it to later memory tools, or omit it."
+    )
+    ctx_id: str = Field(description="Alias of session_id, kept for compatibility.")
+    world_id: str
+    profile_id: str
+    robot_id: str
+    hint: str = Field(description="How to use session_id in later calls.")
+
+
 class Pose(Vec3):
     dim: int
 

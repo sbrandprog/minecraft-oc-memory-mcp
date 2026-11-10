@@ -52,7 +52,7 @@ MEMORY_DB=/tmp/robot-memory.db uv run memory-mcp
 
 | MCP tool | Code Mode | Назначение |
 |---|---|---|
-| `open` | `tools.memory.open` | открыть сессию, получить `ctx_id` |
+| `open` | `tools.memory.open` | открыть сессию, получить `session_id` |
 | `brief` | `tools.memory.brief` | core + ближайшие/релевантные POI под бюджет |
 | `map` | `tools.memory.map` | ASCII/JSON карта POI |
 | `remember_poi` | `tools.memory.remember_poi` | создать/обновить POI |
@@ -63,8 +63,10 @@ MEMORY_DB=/tmp/robot-memory.db uv run memory-mcp
 
 ## Протокол агента
 
-1. `open(world_id, profile_id, robot_id)` → `ctx_id`.
-2. `brief(ctx_id, task, pose)` в начале задачи.
+1. `open(world_id, profile_id, robot_id)` → `session_id` (он же `ctx_id`).
+2. `brief(task, pose)` в начале задачи. `session_id` можно не передавать:
+   сервер помнит последнюю открытую сессию. Передавай его явно при переключении
+   между роботами/профилями/мирами.
 3. Пользовательский термин → `nei.resolve`; при неоднозначности уточнить у
    пользователя. В память писать только `item_uid` от NEI.
 4. Наблюдение → `remember_poi`. Повторная встреча того же POI идемпотентно
@@ -75,7 +77,7 @@ MEMORY_DB=/tmp/robot-memory.db uv run memory-mcp
 Инварианты:
 
 - `world_id` неизменяем и уникален для пары «мир + сборка»;
-- `ctx_id` задаёт мир/профиль/робота, аргументы модели его не переопределяют;
+- `session_id` задаёт мир/профиль/робота, аргументы модели его не переопределяют;
 - никаких рецептов, маршрутов, эпизодов и алиасов в MVP;
 - удаление — только явным `forget`; TTL чистится лениво.
 
@@ -148,7 +150,7 @@ SMOKE_DB=/tmp/memory-smoke.db uv run python scripts/mcp_smoke.py
 |---|---|---|
 | `MEMORY_DB` | `data/memory.db` | путь к SQLite |
 | `MEMORY_MIGRATIONS` | `migrations/` | каталог миграций |
-| `MEMORY_CONTEXT_TTL_S` | `43200` | TTL `ctx_id`, секунды |
+| `MEMORY_CONTEXT_TTL_S` | `43200` | TTL `session_id`, секунды |
 | `MEMORY_DEFAULT_RADIUS` | `64` | радиус `brief`/`map` по умолчанию |
 | `MEMORY_DEFAULT_BUDGET_TOKENS` | `1200` | бюджет `brief` |
 | `MEMORY_MAX_RESULTS` | `200` | лимит записей в `map` |

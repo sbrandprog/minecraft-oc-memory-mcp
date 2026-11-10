@@ -27,8 +27,10 @@
    `minecraft:iron_ingot`, `gregtech:meta_ingot_iron`.
 2. **`world_id` не выдумывай.** Бери его из конфигурации сессии/robot-сервиса.
    Он неизменяем для экземпляра мира; при смене сборки нужен новый `world_id`.
-3. **`ctx_id` обязателен для всех вызовов.** Он задаёт мир, профиль и робота.
-   Не пытайся подменить их аргументами.
+3. **`session_id` задаёт мир, профиль и робота.** После `memory_open` его можно
+   не передавать: сервер помнит последнюю открытую сессию. Передавай явно, если
+   переключаешься между роботами, профилями или мирами. Поля `sessionId` нет —
+   только `session_id` (в старых документах он же `ctx_id`).
 4. **Память — вспомогательная.** Если память противоречит текущему состоянию
    мира, доверяй наблюдению и исправь память через `memory_update` или
    `memory_forget`.
@@ -49,7 +51,10 @@ memory_open(
 )
 ```
 
-Сохрани полученный `ctx_id` и используй его во всех следующих вызовах.
+Токен называется `session_id` (в ответе также продублирован как `ctx_id` для
+совместимости). Дальше его можно не передавать: сервер использует последнюю
+открытую сессию. Передавай `session_id` явно только при переключении между
+роботами/профилями/мирами.
 
 ### 3.2. Старт каждой задачи
 
@@ -57,7 +62,7 @@ memory_open(
 
 ```text
 memory_brief(
-  ctx_id="ctx_...",
+  session_id="ctx_...",
   task="<что просит игрок>",
   pose={dim=0, x=..., y=..., z=...},
   radius=64,
@@ -99,7 +104,7 @@ memory_brief(
 
 ```text
 memory_remember_poi(
-  ctx_id="ctx_...",
+  session_id="ctx_...",
   record={
     kind="chest",
     label="iron storage",
@@ -148,7 +153,7 @@ memory_remember_poi(
 
 ```text
 memory_set_preference(
-  ctx_id="ctx_...",
+  session_id="ctx_...",
   record={
     key="base",
     value="overworld (120,64,-340)",
@@ -168,7 +173,7 @@ memory_set_preference(
 
 ```text
 memory_map(
-  ctx_id="ctx_...",
+  session_id="ctx_...",
   dim=0,
   center={x=120, y=64, z=-340},
   radius=64,
@@ -184,9 +189,9 @@ memory_map(
 Если POI устарел или ошибочен:
 
 ```text
-memory_update(ctx_id="ctx_...", poi_id="poi:17", patch={...})
-memory_forget(ctx_id="ctx_...", poi_id="poi:17")
-memory_forget(ctx_id="ctx_...", query="iron chest")
+memory_update(session_id="ctx_...", poi_id="poi:17", patch={...})
+memory_forget(session_id="ctx_...", poi_id="poi:17")
+memory_forget(session_id="ctx_...", query="iron chest")
 ```
 
 Не игнорируй противоречие: если пришёл к сундуку, а он пуст, обнови запись или
@@ -194,7 +199,10 @@ memory_forget(ctx_id="ctx_...", query="iron chest")
 
 ## 9. Обработка ошибок
 
-- `unknown ctx_id` / `expired` → вызови `memory_open` заново.
+- `unknown session_id` / `expired` → вызови `memory_open` заново или не передавай
+  `session_id`, чтобы использовать последнюю сессию.
+- `no active memory session` → вызови `memory_open`.
+- `unexpected argument sessionId` → используй `session_id`, не `sessionId`.
 - `invalid item_uid` / `raw runtime item id is not allowed` → разреши предмет
   через NEI, не повторяй сырой ID.
 - `poi not found or not visible` → проверь `poi_id` и `scope`; возможно, запись
@@ -216,7 +224,7 @@ memory_forget(ctx_id="ctx_...", query="iron chest")
 
 Перед задачей:
 
-- [ ] `memory_open` выполнен, `ctx_id` сохранён;
+- [ ] `memory_open` выполнен, `session_id` сохранён;
 - [ ] `memory_brief` вызван с задачей и текущей позой;
 - [ ] имена предметов разрешены через NEI.
 
