@@ -38,7 +38,13 @@ class OpenResult(BaseModel):
 
 
 class Pose(Vec3):
-    dim: int
+    dim: int = Field(
+        default=0,
+        description=(
+            "Dimension id: 0 = overworld, -1 = nether, 1 = end. "
+            "Defaults to 0; pass it explicitly outside the overworld."
+        ),
+    )
 
 
 class PoiRecord(BaseModel):

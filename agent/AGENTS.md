@@ -73,6 +73,15 @@ memory_brief(
 `brief` всегда возвращает `core`, а также ближайшие и релевантные POI. Используй
 его, чтобы не искать заново то, что уже известно, и не повторять прошлые ошибки.
 
+`pose` — это `{x, y, z, dim}`. `dim` по умолчанию `0` (overworld), поэтому
+в обычном мире его можно не передавать. В Нижнем мире, Энде или модовом
+измерении указывай `dim` явно — иначе поиск пойдёт по overworld.
+
+Вызывай шаги последовательно: `memory_open` отдельным вызовом, затем
+`remember_poi`, затем `brief`. Не оборачивай все три шага в один блок Code Mode
+`execute`: ошибка в последнем вызове перезапустит весь блок, создаст лишнюю
+сессию и повторно запишет POI.
+
 Если `pose` неизвестна — вызови `brief` без неё, но с `task`; если и задачи нет,
 получишь только `core`.
 
@@ -203,6 +212,8 @@ memory_forget(session_id="ctx_...", query="iron chest")
   `session_id`, чтобы использовать последнюю сессию.
 - `no active memory session` → вызови `memory_open`.
 - `unexpected argument sessionId` → используй `session_id`, не `sessionId`.
+- `pose.dim: Missing key` → передай `dim: 0` (overworld) или ID нужного
+  измерения; в новой схеме `dim` необязателен и по умолчанию равен `0`.
 - `invalid item_uid` / `raw runtime item id is not allowed` → разреши предмет
   через NEI, не повторяй сырой ID.
 - `poi not found or not visible` → проверь `poi_id` и `scope`; возможно, запись

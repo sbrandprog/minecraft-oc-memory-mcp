@@ -40,6 +40,31 @@ def test_open_sets_implicit_session(repo: MemoryRepo, monkeypatch) -> None:
     assert brief["nearby"][0]["item_uid"] == "ore:ingotIron"
 
 
+def test_brief_pose_dim_defaults_to_overworld(
+    repo: MemoryRepo, monkeypatch
+) -> None:
+    monkeypatch.setattr(server, "_repo", repo)
+    opened = server.memory_open("smoke-world", "team1", "robot-1")
+    server.memory_remember_poi(
+        PoiRecord(
+            kind="chest",
+            label="iron",
+            dim=0,
+            x=10,
+            y=64,
+            z=10,
+            item_uid="ore:ingotIron",
+        )
+    )
+
+    brief = server.memory_brief(
+        session_id=opened.session_id, pose=Pose(x=10, y=64, z=12)
+    )
+
+    assert brief["nearby"][0]["dim"] == 0
+    assert brief["nearby"][0]["dist"] == 2
+
+
 def test_tools_require_open_without_implicit_session(
     repo: MemoryRepo, monkeypatch
 ) -> None:

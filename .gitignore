@@ -24,3 +24,4 @@ data/
 # Local env
 .env
 .env.*
+opencode.json

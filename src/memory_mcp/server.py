@@ -78,9 +78,10 @@ def memory_brief(
     """Get compact memory context for the current task.
 
     Always returns pinned core facts. If pose is given, adds nearby POIs sorted
-    by proximity; task text, kind and item_uid add relevant POIs. item_uid must
-    be a stable NEI uid, not a raw numeric id. session_id is optional after
-    memory_open.
+    by proximity; task text, kind and item_uid add relevant POIs. pose is
+    {x, y, z, dim}; dim defaults to 0 (overworld), so pass it explicitly when
+    the robot is in another dimension. item_uid must be a stable NEI uid, not a
+    raw numeric id. session_id is optional after memory_open.
     """
     return repo().brief(
         _session(session_id),
@@ -103,7 +104,8 @@ def memory_map(
 ) -> dict:
     """Render known POIs around a point as an ASCII map or a JSON list.
 
-    session_id is optional after memory_open.
+    dim is the dimension id (0 = overworld). center is {x, y, z} and does not
+    include dim. session_id is optional after memory_open.
     """
     return repo().map_pois(
         _session(session_id), dim=dim, center=center, radius=radius, fmt=format
