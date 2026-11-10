@@ -1,0 +1,26 @@
+# Local, machine-specific game files (1.7.10 / GTNH instance, jars, archives)
+local/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local env
+.env
+.env.*
