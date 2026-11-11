@@ -6,9 +6,23 @@ import sqlite3
 
 from .config import Settings
 from .db import connect, migrate
-from .rank import apply_budget, score_row
+from .rank import (
+    EPISODE_MIN_PREFIX,
+    apply_budget,
+    apply_episode_budget,
+    episode_text_score,
+    score_episode,
+    score_row,
+)
 from .render import render_ascii
-from .schemas import PoiPatch, PoiRecord, Pose, PreferenceRecord, Vec3
+from .schemas import (
+    EpisodeRecord,
+    PoiPatch,
+    PoiRecord,
+    Pose,
+    PreferenceRecord,
+    Vec3,
+)
 from .spatial import (
     get_visible_poi,
     nearby_rows,
@@ -17,10 +31,16 @@ from .spatial import (
     weighted_distance,
 )
 from .util import (
+    dump_list,
     dump_tags,
+    escape_like,
+    format_episode_id,
     format_poi_id,
+    load_list,
     load_tags,
+    normalize_text,
     now_ms,
+    parse_episode_id,
     parse_poi_id,
 )
 from .validate import (
@@ -156,6 +176,54 @@ class MemoryRepo:
         }
         if dist is not None:
             result["dist"] = round(dist, 2)
+        return result
+
+    @staticmethod
+    def _row_to_episode(row: sqlite3.Row) -> dict:
+        return {
+            "id": format_episode_id(row["id"]),
+            "goal": row["goal"],
+            "outcome": row["outcome"],
+            "obstacles": load_list(row["obstacles"]),
+            "lesson": row["lesson"],
+            "tags": load_list(row["tags"]),
+            "scope": row["scope"],
+            "importance": row["importance"],
+            "occurrences": row["occurrences"],
+            "created_at": row["created_at"],
+            "last_seen_at": row["last_seen_at"],
+        }
+
+    @staticmethod
+    def _episode_search_text(
+        goal_norm: str,
+        obstacles: list[str],
+        lesson_norm: str,
+        tags_norm: list[str],
+    ) -> str:
+        parts = [goal_norm, lesson_norm]
+        parts.extend(normalize_text(item) for item in obstacles)
+        parts.extend(tags_norm)
+        return " ".join(part for part in parts if part)
+
+    @staticmethod
+    def _doc_tokens(value: str) -> set[str]:
+        return set(re.findall(r"[\w\-]+", normalize_text(value), flags=re.UNICODE))
+
+    def _episode_field_tokens(self, row: sqlite3.Row) -> dict[str, set[str]]:
+        return {
+            "goal": self._doc_tokens(row["goal"]),
+            "lesson": self._doc_tokens(row["lesson"]),
+            "obstacles": self._doc_tokens(" ".join(load_list(row["obstacles"]))),
+            "tags": self._doc_tokens(" ".join(load_list(row["tags"]))),
+        }
+
+    @staticmethod
+    def _merge_unique(first: list[str], second: list[str]) -> list[str]:
+        result = list(first)
+        for item in second:
+            if item not in result:
+                result.append(item)
         return result
 
     # -------------------------------------------------------------------- write
@@ -346,6 +414,304 @@ class MemoryRepo:
         self.conn.commit()
         return {"key": record.key, "scope": record.scope, "updated_at": now}
 
+    def _find_episode(
+        self,
+        *,
+        world_id: str,
+        scope: str,
+        owner: str,
+        goal_norm: str,
+        lesson_norm: str,
+    ) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT * FROM episode
+            WHERE world_id = ? AND scope = ? AND owner = ?
+              AND goal_norm = ? AND lesson_norm = ?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (world_id, scope, owner, goal_norm, lesson_norm),
+        ).fetchone()
+
+    def _merge_episode(
+        self, existing: sqlite3.Row, record: EpisodeRecord, now: int
+    ) -> None:
+        goal_norm = normalize_text(record.goal)
+        lesson_norm = normalize_text(record.lesson)
+        obstacles = self._merge_unique(
+            load_list(existing["obstacles"]), record.obstacles
+        )[:10]
+        tags = self._merge_unique(load_list(existing["tags"]), record.tags)[:32]
+        merged_tags_norm = sorted({normalize_text(tag) for tag in tags if tag})
+        search_text = self._episode_search_text(
+            goal_norm, obstacles, lesson_norm, merged_tags_norm
+        )
+        self.conn.execute(
+            """
+            UPDATE episode
+            SET goal = ?,
+                obstacles = ?,
+                tags = ?,
+                tags_norm = ?,
+                search_text = ?,
+                outcome = ?,
+                importance = MAX(importance, ?),
+                last_seen_at = ?,
+                occurrences = occurrences + 1
+            WHERE id = ?
+            """,
+            (
+                record.goal,
+                dump_list(obstacles),
+                dump_tags(tags),
+                dump_tags(merged_tags_norm),
+                search_text,
+                record.outcome,
+                record.importance,
+                now,
+                existing["id"],
+            ),
+        )
+
+    def remember_episode(self, ctx_id: str, record: EpisodeRecord) -> dict:
+        ctx = self.require_context(ctx_id)
+        owner = self._owner_for(record.scope, ctx)
+        now = now_ms()
+        goal_norm = normalize_text(record.goal)
+        lesson_norm = normalize_text(record.lesson)
+        tags_norm = sorted({normalize_text(tag) for tag in record.tags if tag})
+        search_text = self._episode_search_text(
+            goal_norm, record.obstacles, lesson_norm, tags_norm
+        )
+
+        existing = self._find_episode(
+            world_id=ctx["world_id"],
+            scope=record.scope,
+            owner=owner,
+            goal_norm=goal_norm,
+            lesson_norm=lesson_norm,
+        )
+        if existing is not None:
+            self._merge_episode(existing, record, now)
+            self.conn.commit()
+            return {"id": format_episode_id(existing["id"]), "merged": True}
+
+        cur = self.conn.execute(
+            """
+            INSERT INTO episode(
+              world_id, scope, owner, goal, outcome, obstacles, lesson, tags,
+              importance, occurrences, created_at, last_seen_at,
+              goal_norm, lesson_norm, tags_norm, search_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(world_id, scope, owner, goal_norm, lesson_norm)
+            DO NOTHING
+            """,
+            (
+                ctx["world_id"],
+                record.scope,
+                owner,
+                record.goal,
+                record.outcome,
+                dump_list(record.obstacles),
+                record.lesson,
+                dump_tags(record.tags),
+                record.importance,
+                now,
+                now,
+                goal_norm,
+                lesson_norm,
+                dump_tags(tags_norm),
+                search_text,
+            ),
+        )
+        if cur.rowcount == 0:
+            # A concurrent writer inserted the same merge key between our
+            # SELECT and INSERT; merge into that row instead.
+            existing = self._find_episode(
+                world_id=ctx["world_id"],
+                scope=record.scope,
+                owner=owner,
+                goal_norm=goal_norm,
+                lesson_norm=lesson_norm,
+            )
+            if existing is None:
+                raise ValueError("episode merge conflict could not be resolved")
+            self._merge_episode(existing, record, now)
+            self.conn.commit()
+            return {"id": format_episode_id(existing["id"]), "merged": True}
+
+        self.conn.commit()
+        return {"id": format_episode_id(cur.lastrowid), "merged": False}
+
+    @staticmethod
+    def _tag_score(filters: list[str], doc_tags: list[str]) -> float:
+        if not filters:
+            return 0.0
+        doc = set(doc_tags)
+        return sum(1 for tag in filters if tag in doc) / len(filters)
+
+    def _rank_episodes(
+        self,
+        ctx: sqlite3.Row,
+        *,
+        query: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 5,
+        threshold: float = 0.20,
+    ) -> list[tuple[float, sqlite3.Row, list[str]]]:
+        profile_owner, robot_owner = self._owners(ctx)
+        query_norm = normalize_text(query or "")
+        if query is not None and query.strip() and not query_norm:
+            return []
+        tokens = self._task_tokens(query_norm, limit=8) if query_norm else []
+        tag_filters = sorted(
+            {normalize_text(tag) for tag in (tags or []) if tag.strip()}
+        )
+        if query_norm and not tokens and not tag_filters:
+            return []
+
+        sql = f"""
+            SELECT e.*
+            FROM episode e
+            WHERE e.world_id = ?
+              AND {visibility_clause("e")}
+        """
+        params: list[object] = [
+            ctx["world_id"],
+            profile_owner,
+            robot_owner,
+        ]
+        if tokens:
+            prefixes = self._search_prefixes(tokens)
+            sql += " AND (" + " OR ".join(
+                "e.search_text LIKE ?" for _ in prefixes
+            ) + ")"
+            params.extend(f"%{prefix}%" for prefix in prefixes)
+        if tag_filters:
+            sql += " AND " + " AND ".join(
+                "e.tags_norm LIKE ?" for _ in tag_filters
+            )
+            params.extend(f'%"{tag}"%' for tag in tag_filters)
+        sql += " ORDER BY e.last_seen_at DESC LIMIT ?"
+        params.append(max(300, limit * 20))
+
+        rows = self.conn.execute(sql, params).fetchall()
+        now = now_ms()
+        scored: list[tuple[float, sqlite3.Row, list[str]]] = []
+        for row in rows:
+            if tokens:
+                text_score, matched = episode_text_score(
+                    tokens,
+                    self._episode_field_tokens(row),
+                    full_query=query_norm,
+                    search_text=row["search_text"],
+                )
+                if text_score < threshold:
+                    continue
+                tag_score = self._tag_score(
+                    tag_filters, load_list(row["tags_norm"])
+                )
+            else:
+                text_score, matched = 0.0, []
+                tag_score = self._tag_score(
+                    tag_filters, load_list(row["tags_norm"])
+                )
+            score = score_episode(
+                row,
+                now_ms=now,
+                text_score=text_score,
+                tag_score=tag_score,
+                query_used=bool(tokens),
+            )
+            scored.append((score, row, matched))
+
+        scored.sort(
+            key=lambda item: (
+                item[0],
+                item[1]["last_seen_at"],
+                item[1]["id"],
+            ),
+            reverse=True,
+        )
+        return scored[:limit]
+
+    def recall_episodes(
+        self,
+        ctx_id: str,
+        *,
+        query: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 5,
+    ) -> dict:
+        ctx = self.require_context(ctx_id)
+        limit = max(1, min(limit, 50))
+        ranked = self._rank_episodes(
+            ctx, query=query, tags=tags, limit=limit, threshold=0.20
+        )
+        episodes = []
+        for score, row, matched in ranked:
+            item = self._row_to_episode(row)
+            item["score"] = round(score, 3)
+            item["matched"] = matched
+            episodes.append(item)
+        return {"episodes": episodes, "count": len(episodes)}
+
+    def forget_episode(
+        self,
+        ctx_id: str,
+        episode_id: str | None = None,
+        query: str | None = None,
+    ) -> dict:
+        ctx = self.require_context(ctx_id)
+        profile_owner, robot_owner = self._owners(ctx)
+        if episode_id is not None:
+            episode_pk = parse_episode_id(episode_id)
+            row = self.conn.execute(
+                f"""
+                SELECT * FROM episode
+                WHERE id = ? AND world_id = ?
+                  AND {visibility_clause("episode")}
+                """,
+                (
+                    episode_pk,
+                    ctx["world_id"],
+                    profile_owner,
+                    robot_owner,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"episode not found or not visible: {episode_id}"
+                )
+            self.conn.execute("DELETE FROM episode WHERE id = ?", (episode_pk,))
+            self.conn.commit()
+            return {"deleted": 1}
+
+        if query is None or not query.strip():
+            raise ValueError("provide episode_id or a non-empty query")
+
+        query_norm = normalize_text(query)
+        if not query_norm:
+            raise ValueError("query must contain searchable text")
+
+        cur = self.conn.execute(
+            f"""
+            DELETE FROM episode
+            WHERE world_id = ?
+              AND search_text LIKE ? ESCAPE '\\'
+              AND {visibility_clause("episode")}
+            """,
+            (
+                ctx["world_id"],
+                f"%{escape_like(query_norm)}%",
+                profile_owner,
+                robot_owner,
+            ),
+        )
+        self.conn.commit()
+        return {"deleted": cur.rowcount}
+
     def update_poi(self, ctx_id: str, poi_id: str, patch: PoiPatch) -> dict:
         ctx = self.require_context(ctx_id)
         poi_pk = parse_poi_id(poi_id)
@@ -449,16 +815,26 @@ class MemoryRepo:
         ]
 
     @staticmethod
-    def _task_tokens(task: str | None) -> list[str]:
+    def _task_tokens(task: str | None, *, limit: int = 6) -> list[str]:
         if not task:
             return []
-        tokens = re.findall(r"[\w\-]+", task.lower(), flags=re.UNICODE)
+        tokens = re.findall(
+            r"[\w\-]+", normalize_text(task), flags=re.UNICODE
+        )
         result = []
         for token in tokens:
             if len(token) < 3 or token in _STOPWORDS:
                 continue
             result.append(token)
-        return result[:6]
+        return result[:limit]
+
+    @staticmethod
+    def _search_prefixes(tokens: list[str]) -> list[str]:
+        # episode_text_score matches tokens sharing at least
+        # EPISODE_MIN_PREFIX leading characters, so this prefix is a sound
+        # (and cheap) SQL prefilter. Anything it lets through is verified by
+        # the scorer afterwards.
+        return sorted({token[:EPISODE_MIN_PREFIX] for token in tokens})
 
     def brief(
         self,
@@ -470,6 +846,8 @@ class MemoryRepo:
         kind: str | None = None,
         radius: int | None = None,
         budget_tokens: int | None = None,
+        include_lessons: bool = True,
+        lesson_budget_tokens: int | None = None,
     ) -> dict:
         ctx = self.require_context(ctx_id)
         profile_owner, robot_owner = self._owners(ctx)
@@ -478,6 +856,11 @@ class MemoryRepo:
             self.settings.default_budget_tokens
             if budget_tokens is None
             else budget_tokens
+        )
+        lesson_budget = (
+            self.settings.lesson_budget_tokens
+            if lesson_budget_tokens is None
+            else max(0, lesson_budget_tokens)
         )
         if item_uid is not None:
             item_uid = validate_item_uid(item_uid)
@@ -550,14 +933,51 @@ class MemoryRepo:
         for item in selected:
             is_nearby = item.pop("_nearby", False)
             (nearby if is_nearby else relevant).append(item)
+
+        lessons: list[dict] = []
+        lesson_used = 0
+        if (
+            include_lessons
+            and tokens
+            and lesson_budget > 0
+            and self.settings.max_lessons > 0
+        ):
+            ranked = self._rank_episodes(
+                ctx,
+                query=task,
+                limit=self.settings.max_lessons,
+                threshold=0.25,
+            )
+            compact = []
+            for _score, row, _matched in ranked:
+                item = self._row_to_episode(row)
+                compact.append(
+                    {
+                        "id": item["id"],
+                        "goal": item["goal"],
+                        "outcome": item["outcome"],
+                        "obstacles": item["obstacles"],
+                        "lesson": item["lesson"],
+                        "tags": item["tags"],
+                        "occurrences": item["occurrences"],
+                    }
+                )
+            lessons, lesson_used = apply_episode_budget(
+                compact, lesson_budget
+            )
+
         return {
             "core": core,
             "nearby": nearby,
             "relevant": relevant,
+            "lessons": lessons,
             "stats": {
                 "returned": len(selected),
                 "used_tokens": used,
                 "budget_tokens": budget,
+                "lessons_returned": len(lessons),
+                "lesson_tokens": lesson_used,
+                "lesson_budget_tokens": lesson_budget,
             },
         }
 
@@ -624,6 +1044,24 @@ class MemoryRepo:
                 params,
             )
         }
+        episode_where = (
+            f"world_id = ? AND {visibility_clause('episode')}"
+        )
+        episode_total = self.conn.execute(
+            f"SELECT COUNT(*) AS n FROM episode WHERE {episode_where}", params
+        ).fetchone()["n"]
+        episodes_by_outcome = {
+            row["outcome"]: row["n"]
+            for row in self.conn.execute(
+                f"""
+                SELECT outcome, COUNT(*) AS n
+                FROM episode
+                WHERE {episode_where}
+                GROUP BY outcome
+                """,
+                params,
+            )
+        }
         try:
             db_bytes = self.settings.db_path.stat().st_size
         except OSError:
@@ -633,6 +1071,8 @@ class MemoryRepo:
             "poi_total": total,
             "by_kind": by_kind,
             "by_scope": by_scope,
+            "episode_total": episode_total,
+            "episodes_by_outcome": episodes_by_outcome,
             "db_bytes": db_bytes,
         }
 

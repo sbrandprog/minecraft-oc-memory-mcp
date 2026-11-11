@@ -7,6 +7,7 @@ from mcp.server.mcpserver import MCPServer
 from .config import load_settings
 from .repo import MemoryRepo
 from .schemas import (
+    EpisodeRecord,
     OpenResult,
     PoiPatch,
     PoiRecord,
@@ -18,11 +19,13 @@ from .schemas import (
 mcp = MCPServer(
     "memory-mcp",
     instructions=(
-        "Persistent spatial memory for a Minecraft/OpenComputers robot agent. "
-        "Call memory_open once per session; it returns session_id. Later tools "
-        "accept session_id, but you may omit it: the server remembers the last "
-        "opened session. Resolve item names through NEI first and store only its "
-        "stable item_uid. Never pass raw runtime item ids such as '265:0'."
+        "Persistent spatial and episodic memory for a Minecraft/OpenComputers "
+        "robot agent. Call memory_open once per session; it returns session_id. "
+        "Later tools accept session_id, but you may omit it: the server "
+        "remembers the last opened session. Resolve item names through NEI "
+        "first and store only its stable item_uid. Never pass raw runtime item "
+        "ids such as '265:0'. When a task teaches a reusable lesson, save it "
+        "with memory_remember_episode and read brief.lessons before planning."
     ),
 )
 
@@ -73,15 +76,18 @@ def memory_brief(
     kind: str | None = None,
     radius: int = 64,
     budget_tokens: int = 1200,
+    include_lessons: bool = True,
+    lesson_budget_tokens: int | None = None,
     session_id: str | None = None,
 ) -> dict:
     """Get compact memory context for the current task.
 
     Always returns pinned core facts. If pose is given, adds nearby POIs sorted
-    by proximity; task text, kind and item_uid add relevant POIs. pose is
-    {x, y, z, dim}; dim defaults to 0 (overworld), so pass it explicitly when
-    the robot is in another dimension. item_uid must be a stable NEI uid, not a
-    raw numeric id. session_id is optional after memory_open.
+    by proximity; task text, kind and item_uid add relevant POIs. When task is
+    set, adds matching lessons from past episodes under lesson_budget_tokens.
+    pose is {x, y, z, dim}; dim defaults to 0 (overworld), so pass it explicitly
+    when the robot is in another dimension. item_uid must be a stable NEI uid,
+    not a raw numeric id. session_id is optional after memory_open.
     """
     return repo().brief(
         _session(session_id),
@@ -91,6 +97,8 @@ def memory_brief(
         kind=kind,
         radius=radius,
         budget_tokens=budget_tokens,
+        include_lessons=include_lessons,
+        lesson_budget_tokens=lesson_budget_tokens,
     )
 
 
@@ -133,6 +141,57 @@ def memory_set_preference(
     session_id is optional after memory_open.
     """
     return repo().set_preference(_session(session_id), record)
+
+
+@mcp.tool(name="remember_episode")
+def memory_remember_episode(
+    record: EpisodeRecord, session_id: str | None = None
+) -> dict:
+    """Save a reusable lesson from a completed task.
+
+    Format the experience as: what was asked (goal), what got in the way
+    (obstacles), and how to do it better next time (lesson). Set outcome to
+    success, partial or failed. Identical goal+lesson pairs merge and bump
+    occurrences. Use scope='world' to share the lesson with every robot,
+    'profile' for the team, 'robot' for private experience. session_id is
+    optional after memory_open.
+    """
+    return repo().remember_episode(_session(session_id), record)
+
+
+@mcp.tool(name="recall_episodes")
+def memory_recall_episodes(
+    query: str | None = None,
+    tags: list[str] | None = None,
+    limit: int = 5,
+    session_id: str | None = None,
+) -> dict:
+    """Find past episodes by task text and/or tags.
+
+    Uses lexical matching over goal, obstacles, lesson and tags, then ranks by
+    match quality, importance, recency and how often the lesson repeated.
+    Without query, returns the most important/recent episodes. session_id is
+    optional after memory_open.
+    """
+    return repo().recall_episodes(
+        _session(session_id), query=query, tags=tags, limit=limit
+    )
+
+
+@mcp.tool(name="forget_episode")
+def memory_forget_episode(
+    episode_id: str | None = None,
+    query: str | None = None,
+    session_id: str | None = None,
+) -> dict:
+    """Delete an episode by id (ep:<int>) or all visible episodes whose
+    searchable text contains query.
+
+    session_id is optional after memory_open.
+    """
+    return repo().forget_episode(
+        _session(session_id), episode_id=episode_id, query=query
+    )
 
 
 @mcp.tool(name="update")

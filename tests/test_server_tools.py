@@ -4,7 +4,12 @@ import pytest
 
 from memory_mcp import server
 from memory_mcp.repo import MemoryRepo
-from memory_mcp.schemas import PoiRecord, Pose, PreferenceRecord
+from memory_mcp.schemas import (
+    EpisodeRecord,
+    PoiRecord,
+    Pose,
+    PreferenceRecord,
+)
 
 
 def test_open_sets_implicit_session(repo: MemoryRepo, monkeypatch) -> None:
@@ -71,3 +76,36 @@ def test_tools_require_open_without_implicit_session(
     monkeypatch.setattr(server, "_repo", repo)
     with pytest.raises(ValueError, match="no active memory session"):
         server.memory_brief()
+
+
+def test_episode_tools(repo: MemoryRepo, monkeypatch) -> None:
+    monkeypatch.setattr(server, "_repo", repo)
+    opened = server.memory_open("smoke-world", "team1", "robot-1")
+
+    saved = server.memory_remember_episode(
+        EpisodeRecord(
+            goal="bring iron from the chest",
+            outcome="partial",
+            obstacles=["the base chest was empty"],
+            lesson="check the second chest near the base first",
+            tags=["iron", "storage"],
+        ),
+        session_id=opened.session_id,
+    )
+    assert saved["id"].startswith("ep:")
+
+    found = server.memory_recall_episodes(
+        query="bring iron", session_id=opened.session_id
+    )
+    assert found["count"] == 1
+    assert found["episodes"][0]["id"] == saved["id"]
+
+    brief = server.memory_brief(
+        task="bring iron", session_id=opened.session_id
+    )
+    assert brief["lessons"][0]["id"] == saved["id"]
+
+    forgotten = server.memory_forget_episode(
+        episode_id=saved["id"], session_id=opened.session_id
+    )
+    assert forgotten["deleted"] == 1

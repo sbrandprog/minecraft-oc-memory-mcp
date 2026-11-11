@@ -24,6 +24,9 @@ EXPECTED_TOOLS = {
     "map",
     "remember_poi",
     "set_preference",
+    "remember_episode",
+    "recall_episodes",
+    "forget_episode",
     "update",
     "forget",
     "stats",
@@ -129,6 +132,43 @@ async def main() -> None:
             f"tokens={brief['stats']['used_tokens']}"
         )
 
+        episode = await _call(
+            session,
+            "remember_episode",
+            {
+                "record": {
+                    "goal": "bring iron from the base chest",
+                    "outcome": "partial",
+                    "obstacles": ["the base chest was empty"],
+                    "lesson": "check the second chest near the base first",
+                    "tags": ["iron", "storage"],
+                    "scope": "world",
+                },
+            },
+        )
+        print(f"episode: {episode['id']} merged={episode['merged']}")
+
+        recalled = await _call(
+            session, "recall_episodes", {"query": "bring iron", "limit": 3}
+        )
+        if recalled["count"] != 1:
+            raise RuntimeError("episode was not recalled by query")
+        if recalled["episodes"][0]["id"] != episode["id"]:
+            raise RuntimeError("recall returned the wrong episode")
+        print(f"recall: {recalled['count']} episode")
+
+        brief = await _call(
+            session,
+            "brief",
+            {
+                "task": "bring iron",
+                "pose": {"dim": 0, "x": 10, "y": 64, "z": 12},
+            },
+        )
+        if not brief["lessons"]:
+            raise RuntimeError("brief did not return a matching lesson")
+        print(f"brief lessons: {len(brief['lessons'])}")
+
         mapped = await _call(
             session,
             "map",
@@ -168,8 +208,21 @@ async def main() -> None:
             raise RuntimeError("poi was not deleted")
         print("forget: 1 poi deleted")
 
+        forgotten_episode = await _call(
+            session,
+            "forget_episode",
+            {"session_id": session_id, "episode_id": episode["id"]},
+        )
+        if forgotten_episode["deleted"] != 1:
+            raise RuntimeError("episode was not deleted")
+        print("forget: 1 episode deleted")
+
         stats = await _call(session, "stats", {})
-        print(f"stats: total={stats['poi_total']} db={stats['db_bytes']} bytes")
+        print(
+            f"stats: pois={stats['poi_total']} "
+            f"episodes={stats['episode_total']} "
+            f"db={stats['db_bytes']} bytes"
+        )
 
     print("OK")
 

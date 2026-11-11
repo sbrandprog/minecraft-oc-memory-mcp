@@ -15,6 +15,8 @@ class Settings:
     default_radius: int = 64
     default_budget_tokens: int = 1200
     max_results: int = 200
+    lesson_budget_tokens: int = 300
+    max_lessons: int = 3
 
 
 def _default_migrations_dir() -> Path:
@@ -38,4 +40,8 @@ def load_settings() -> Settings:
             os.environ.get("MEMORY_DEFAULT_BUDGET_TOKENS", "1200")
         ),
         max_results=int(os.environ.get("MEMORY_MAX_RESULTS", "200")),
+        lesson_budget_tokens=int(
+            os.environ.get("MEMORY_LESSON_BUDGET_TOKENS", "300")
+        ),
+        max_lessons=int(os.environ.get("MEMORY_MAX_LESSONS", "3")),
     )

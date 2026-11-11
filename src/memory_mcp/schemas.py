@@ -18,6 +18,7 @@ PoiKind = Literal[
 ]
 Scope = Literal["world", "profile", "robot"]
 Source = Literal["observed", "told", "inferred"]
+Outcome = Literal["success", "partial", "failed"]
 
 
 class Vec3(BaseModel):
@@ -89,6 +90,67 @@ class PreferenceRecord(BaseModel):
         if not value:
             raise ValueError("key must not be empty")
         return value
+
+
+class EpisodeRecord(BaseModel):
+    goal: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="What the player asked for, in the user's terms.",
+    )
+    outcome: Outcome = Field(
+        default="partial",
+        description="How the task ended: success, partial or failed.",
+    )
+    obstacles: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Difficulties encountered, one short phrase each.",
+    )
+    lesson: str = Field(
+        min_length=1,
+        max_length=2000,
+        description="Actionable advice for doing this better next time.",
+    )
+    tags: list[str] = Field(default_factory=list, max_length=32)
+    scope: Scope = "world"
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+
+    @field_validator("goal", "lesson")
+    @classmethod
+    def _strip_required(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be empty")
+        return value
+
+    @field_validator("obstacles")
+    @classmethod
+    def _clean_obstacles(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                continue
+            if len(value) > 500:
+                raise ValueError("each obstacle must be at most 500 characters")
+            cleaned.append(value)
+        if len(cleaned) > 10:
+            raise ValueError("at most 10 obstacles are allowed")
+        return cleaned
+
+    @field_validator("tags")
+    @classmethod
+    def _clean_tags(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            value = value.strip()
+            if not value:
+                continue
+            if len(value) > 128:
+                raise ValueError("each tag must be at most 128 characters")
+            cleaned.append(value)
+        return cleaned
 
 
 class PoiPatch(BaseModel):

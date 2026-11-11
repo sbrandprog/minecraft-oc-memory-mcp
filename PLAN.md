@@ -27,11 +27,11 @@ opencode / Pi ──MCP──► memory-mcp ──► SQLite (один файл,
 
 - `core` — pinned-факты: база, waypoints, предпочтения игрока, текущее назначение;
 - `poi` — точки интереса: сундуки, руды, машины, порталы, опасности, база, waypoint;
+- `episode` — переиспользуемые уроки: что просили, что помешало, как делать лучше;
 - `brief` / `map` — выдача контекста агенту.
 
 Сознательно **не входит** в MVP:
 
-- эпизоды и уроки (обучение на ошибках);
 - маршруты и статистика путей;
 - алиасы и жаргон;
 - кэш рецептов;
@@ -59,7 +59,7 @@ opencode / Pi ──MCP──► memory-mcp ──► SQLite (один файл,
 
 ## 5. Хранилище
 
-Один SQLite-файл, WAL. Шесть таблиц:
+Один SQLite-файл, WAL. Семь таблиц:
 
 | Таблица | Роль |
 |---|---|
@@ -69,6 +69,7 @@ opencode / Pi ──MCP──► memory-mcp ──► SQLite (один файл,
 | `poi` | точки интереса |
 | `poi_rtree` | 4D-индекс `dim/x/y/z` |
 | `core` | pinned-факты и предпочтения |
+| `episode` | эпизоды и переиспользуемые уроки |
 
 ### 5.1. DDL
 
@@ -171,6 +172,32 @@ CREATE TABLE core (
 );
 
 CREATE INDEX idx_core_lookup ON core(world_id, scope, owner);
+
+CREATE TABLE episode (
+  id           INTEGER PRIMARY KEY,
+  world_id     TEXT NOT NULL REFERENCES world(world_id),
+  scope        TEXT NOT NULL CHECK (scope IN ('world', 'profile', 'robot')),
+  owner        TEXT NOT NULL DEFAULT '',
+  goal         TEXT NOT NULL,
+  outcome      TEXT NOT NULL DEFAULT 'partial'
+               CHECK (outcome IN ('success', 'partial', 'failed')),
+  obstacles    TEXT NOT NULL DEFAULT '[]',
+  lesson       TEXT NOT NULL,
+  tags         TEXT NOT NULL DEFAULT '[]',
+  importance   REAL NOT NULL DEFAULT 0.5 CHECK (importance BETWEEN 0 AND 1),
+  occurrences  INTEGER NOT NULL DEFAULT 1 CHECK (occurrences >= 1),
+  created_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  goal_norm    TEXT NOT NULL,
+  lesson_norm  TEXT NOT NULL,
+  tags_norm    TEXT NOT NULL DEFAULT '[]',
+  search_text  TEXT NOT NULL
+);
+
+CREATE INDEX idx_episode_scope  ON episode(world_id, scope, owner);
+CREATE INDEX idx_episode_recent ON episode(world_id, last_seen_at DESC);
+CREATE UNIQUE INDEX idx_episode_merge
+  ON episode(world_id, scope, owner, goal_norm, lesson_norm);
 ```
 
 ### 5.2. Валидация `item_uid`
@@ -197,6 +224,7 @@ memory_open(world_id, profile_id, robot_id) -> {
 
 memory_brief(task=None, pose=None, item_uid=None, kind=None,
              radius=64, budget_tokens=1200,
+             include_lessons=True, lesson_budget_tokens=300,
              session_id=None) -> Brief
 
 memory_map(dim, center, radius=64, format="ascii",
@@ -204,6 +232,12 @@ memory_map(dim, center, radius=64, format="ascii",
 
 memory_remember_poi(record: PoiRecord, session_id=None) -> {id, merged}
 memory_set_preference(record: PreferenceRecord, session_id=None) -> {key}
+
+memory_remember_episode(record: EpisodeRecord, session_id=None) -> {id, merged}
+memory_recall_episodes(query=None, tags=None, limit=5,
+                       session_id=None) -> {episodes, count}
+memory_forget_episode(episode_id=None, query=None,
+                      session_id=None) -> {deleted}
 
 memory_update(poi_id, patch: PoiPatch, session_id=None) -> Poi
 memory_forget(poi_id=None, query=None, session_id=None) -> {deleted}
@@ -228,7 +262,19 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
     "dist": 14, "source": "observed", "confidence": 0.9
   }],
   "relevant": [],
-  "stats": {"returned": 1, "used_tokens": 412}
+  "lessons": [{
+    "id": "ep:4",
+    "goal": "принести железо из сундука",
+    "outcome": "partial",
+    "obstacles": ["сундук у базы был пуст"],
+    "lesson": "сначала проверить второй сундук у базы",
+    "tags": ["iron", "storage"],
+    "occurrences": 2
+  }],
+  "stats": {
+    "returned": 1, "used_tokens": 412,
+    "lessons_returned": 1, "lesson_tokens": 84
+  }
 }
 ```
 
@@ -243,6 +289,9 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 4. Если есть — merge: `label`, `tags`, `confidence`, `last_seen_at`.
 5. Иначе insert; уникальный индекс ловит точные повторы.
 6. Предпочтение — upsert в `core` по `(world, scope, owner, key)`.
+7. Эпизод — нормализовать `goal`/`lesson`/`tags`, найти совпадение по
+   `(world, scope, owner, goal_norm, lesson_norm)`. Если есть — merge и
+   `occurrences += 1`; иначе insert.
 
 ### Чтение
 
@@ -251,9 +300,12 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 3. Если задан `pose` — bbox по `poi_rtree`, затем точная дистанция
    `sqrt(dx² + dz²) + 2|dy|`.
 4. Фильтр по `kind`, `item_uid`, `scope`, `ttl_at`.
-5. Ранжирование: `source_weight + confidence + recency + distance_decay`;
+5. Ранжирование POI: `source_weight + confidence + recency + distance_decay`;
    точное совпадение `item_uid` — буст.
-6. Обрезать под `budget_tokens`, вернуть `id` записей.
+6. Обрезать POI под `budget_tokens`, вернуть `id` записей.
+7. Если задан `task` — подобрать эпизоды по токенам (`goal`, `obstacles`,
+   `lesson`, `tags`), отранжировать по `text_score + importance + recency +
+   occurrences`, обрезать под `lesson_budget_tokens`.
 
 ## 8. Протокол агента
 
@@ -263,7 +315,9 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 4. Наблюдение → `memory_remember_poi` с UID от NEI.
 5. Предпочтение игрока → `memory_set_preference`.
 6. Повторная встреча POI → idempotent `memory_remember_poi` (обновляет `last_seen_at`).
-7. «Забудь» → `memory_forget`.
+7. Переиспользуемый урок после задачи → `memory_remember_episode`.
+8. Не хватает опыта → `memory_recall_episodes(query=...)`.
+9. «Забудь» → `memory_forget` / `memory_forget_episode`.
 
 ## 9. Инварианты
 
@@ -271,9 +325,11 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 2. `world_id` неизменяем; смена пака — новый мир или очистка.
 3. Память не вызывает другие сервисы и Minecraft.
 4. Видимость и мир берутся из `session_id`, а не из аргументов модели.
-5. `memory_remember_poi` идемпотентен.
-6. Удаление — только явный `memory_forget`; TTL чистится лениво.
-7. Никаких рецептов, маршрутов, эпизодов и алиасов в MVP.
+5. `memory_remember_poi` идемпотентен; `memory_remember_episode` merge-ит
+   повторяющиеся `goal + lesson`.
+6. Удаление — только явный `memory_forget` / `memory_forget_episode`; TTL
+   чистится лениво.
+7. Никаких рецептов, маршрутов и алиасов в MVP.
 
 ## 10. Структура проекта
 
@@ -283,15 +339,16 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 ├── PLAN.md
 ├── pyproject.toml
 ├── migrations/
-│   └── 001_init.sql
+│   ├── 001_init.sql
+│   └── 002_episodes.sql
 ├── src/memory_mcp/
 │   ├── __init__.py
-│   ├── server.py      # FastMCP, регистрация tools
+│   ├── server.py      # MCPServer, регистрация tools
 │   ├── schemas.py     # Pydantic-модели
 │   ├── db.py          # соединение, WAL, миграции
-│   ├── repo.py        # CRUD, visibility, merge
+│   ├── repo.py        # CRUD, visibility, merge, эпизоды
 │   ├── spatial.py     # R*Tree-запросы, дистанция
-│   ├── rank.py        # скоринг и бюджет токенов
+│   ├── rank.py        # скоринг POI/эпизодов и бюджет токенов
 │   ├── render.py      # ASCII-карта
 │   ├── validate.py    # item_uid, координаты
 │   └── config.py      # путь к БД, лимиты
@@ -305,8 +362,8 @@ memory_stats(session_id=None) -> {poi_total, by_kind, by_scope, db_bytes, world_
 2. `memory_open`, `memory_remember_poi`, `memory_set_preference`.
 3. `poi_rtree`-поиск, `memory_brief`, ранжирование и бюджет.
 4. `memory_map`, `memory_update`, `memory_forget`, `memory_stats`.
-5. Тесты: UID, видимость, дедуп, TTL, brief.
-6. Интеграция с агентом по MCP, протокол в `AGENTS.md` (в репозитории агента).
+5. `episode`: запись, merge, лексический поиск, `brief.lessons`.
+6. Тесты: UID, видимость, дедуп, TTL, brief, эпизоды.
+7. Интеграция с агентом по MCP, протокол в `AGENTS.md` (в репозитории агента).
 
-Позже, без ломки схемы: `episode`/`lesson`, `route_stats`, FTS5, `embedding`,
-`claim`.
+Позже, без ломки схемы: `route_stats`, FTS5, `claim`.

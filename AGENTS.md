@@ -29,7 +29,7 @@ uv run python -m memory_mcp.server            # equivalent entrypoint
 
 ## Architecture
 
-- `src/memory_mcp/server.py` — MCP wiring and the 8 tools. It imports
+- `src/memory_mcp/server.py` — MCP wiring and the 11 tools. It imports
   `MCPServer` from `mcp.server.mcpserver` (MCP v2 API, **not** `FastMCP`).
   Tool names registered with MCP are short: `open`, `brief`, `remember_poi`,
   ...; `memory_*` is only the client-side/Code Mode prefix.

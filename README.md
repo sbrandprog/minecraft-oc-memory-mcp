@@ -58,9 +58,16 @@ MEMORY_DB=/tmp/robot-memory.db uv run memory-mcp
 | `map` | `tools.memory.map` | ASCII/JSON карта POI |
 | `remember_poi` | `tools.memory.remember_poi` | создать/обновить POI |
 | `set_preference` | `tools.memory.set_preference` | pinned-факт или предпочтение |
+| `remember_episode` | `tools.memory.remember_episode` | сохранить опыт: задача, трудности, урок |
+| `recall_episodes` | `tools.memory.recall_episodes` | найти прошлый опыт по тексту/тегам |
+| `forget_episode` | `tools.memory.forget_episode` | удалить эпизод |
 | `update` | `tools.memory.update` | частично обновить POI |
-| `forget` | `tools.memory.forget` | удалить по id или по подстроке label |
+| `forget` | `tools.memory.forget` | удалить POI по id или подстроке label |
 | `stats` | `tools.memory.stats` | диагностика |
+
+Эпизод — это переиспользуемый урок, а не лог шагов: `goal` (что просили),
+`obstacles` (что помешало), `lesson` (как делать лучше), `outcome` и `tags`.
+`brief(task=...)` автоматически добавляет подходящие уроки в `lessons`.
 
 ## Протокол агента (кратко)
 
@@ -68,16 +75,19 @@ MEMORY_DB=/tmp/robot-memory.db uv run memory-mcp
 2. `brief(task, pose)` в начале задачи. `session_id` можно не передавать:
    сервер помнит последнюю открытую сессию. Передавай его явно при переключении
    между роботами/профилями/мирами. `pose` — `{x, y, z, dim}`; `dim`
-   необязателен и по умолчанию равен `0` (overworld).
+   необязателен и по умолчанию равен `0` (overworld). Поле `lessons` содержит
+   релевантные уроки из прошлых задач.
 3. Термин пользователя → `nei.resolve`; в память писать только `item_uid`.
 4. Наблюдение → `remember_poi`, предпочтение → `set_preference`,
    «забудь» → `forget`.
+5. Если задача дала переиспользуемый урок → `remember_episode`; если опыта
+   не хватает → `recall_episodes` по описанию проблемы.
 
 Инварианты:
 
 - `world_id` неизменяем и уникален для пары «мир + сборка»;
 - `session_id` задаёт мир/профиль/робота, аргументы модели его не переопределяют;
-- никаких рецептов, маршрутов, эпизодов и алиасов в MVP;
+- никаких рецептов, маршрутов и алиасов в MVP;
 - удаление — только явным `forget`; TTL чистится лениво.
 
 Подробный цикл сессии, правила и типовые ошибки — в
@@ -102,8 +112,10 @@ uv run python scripts/mcp_smoke.py        # сквозной MCP-тест
 | `MEMORY_MIGRATIONS` | `migrations/` | каталог миграций |
 | `MEMORY_CONTEXT_TTL_S` | `43200` | TTL `session_id`, секунды |
 | `MEMORY_DEFAULT_RADIUS` | `64` | радиус `brief`/`map` по умолчанию |
-| `MEMORY_DEFAULT_BUDGET_TOKENS` | `1200` | бюджет `brief` |
+| `MEMORY_DEFAULT_BUDGET_TOKENS` | `1200` | бюджет `brief` на POI |
 | `MEMORY_MAX_RESULTS` | `200` | лимит записей в `map` |
+| `MEMORY_LESSON_BUDGET_TOKENS` | `300` | бюджет `brief` на уроки |
+| `MEMORY_MAX_LESSONS` | `3` | максимум уроков в `brief` |
 
 ## Структура
 
@@ -112,11 +124,13 @@ src/memory_mcp/
   server.py      # MCP-сервер и инструменты
   repo.py        # CRUD, видимость, идемпотентный merge
   spatial.py     # R*Tree и дистанция
-  rank.py        # скоринг и бюджет токенов
+  rank.py        # скоринг POI/эпизодов и бюджет токенов
   render.py      # ASCII-карта
   validate.py    # item_uid и идентификаторы
   schemas.py     # Pydantic-модели
   db.py          # SQLite, WAL, миграции
-migrations/001_init.sql
+migrations/
+  001_init.sql
+  002_episodes.sql
 tests/
 ```
